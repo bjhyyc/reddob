@@ -211,6 +211,19 @@ export default function GiftPoolPage() {
                             <span className="text-gray-900">{gift.btcConfirms}</span>
                           </div>
                         )}
+                        {gift.taskId && (
+                          <div className="flex items-center justify-between text-xs mt-1">
+                            <span className="text-gray-700">Task ID:</span>
+                            <span className="text-gray-900 font-mono text-xs">
+                              {gift.taskId.slice(0, 8)}...
+                            </span>
+                          </div>
+                        )}
+                        {gift.error && (
+                          <div className="mt-2 p-2 bg-red-50 rounded text-xs text-red-600">
+                            ⚠️ {gift.error}
+                          </div>
+                        )}
                       </div>
                     )}
 

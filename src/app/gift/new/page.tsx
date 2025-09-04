@@ -13,6 +13,7 @@ import WalletConnectButton from '@/components/WalletConnectButton'
 enum CreationStep {
   FORM = 'form',
   BTC_FUNDING = 'btc_funding', 
+  RGB_QUEUE = 'rgb_queue',
   CKB_MINTING = 'ckb_minting',
   COMPLETED = 'completed'
 }
@@ -259,82 +260,182 @@ export default function NewGiftPage() {
         console.log('💡 RGB++ 协议要求 BTC 交易至少有 1 个确认才能进行 CKB 绑定')
         throw new Error(`BTC 交易需要至少 1 个确认才能进行 CKB 绑定。当前确认数: ${confirmations}。请等待更长时间后再试，或者检查交易是否成功提交到网络。`)
       } else {
-        setProgressMessage('✅ BTC 交易确认完成，开始创建 CKB 交易')
+        setProgressMessage('✅ BTC 交易确认完成，开始提交到 RGB++ 队列')
         console.log(`✅ BTC 交易已确认 ${confirmations} 次，满足 RGB++ 协议要求`)
       }
 
-      // 步骤 2: CKB DoB Minting - 只有在 BTC 交易确认后才执行
-      setCurrentStep(CreationStep.CKB_MINTING)
-      console.log('⚡ 正在铸造 CKB DoB...')
+      // 步骤 2: 提交到 RGB++ 队列服务
+      setCurrentStep(CreationStep.RGB_QUEUE)
+      setProgressMessage('正在提交到 RGB++ 队列服务...')
+      console.log('📤 提交 BTC txid 和虚拟 CKB 交易到 RGB++ 队列...')
       
-      // 读取封面文件为字节数组
-      const coverBytes = new Uint8Array(await form.coverFile.arrayBuffer())
-      
-      const mintResult = await mintDoB(
-        coverBytes,
-        form.blessingText,
-        fundingResult.txid,
-        fundingResult.vout
-      )
-      console.log('✅ CKB DoB 铸造成功:', mintResult.sporeId)
-      
-      // RGB++ 创建阶段验证完成
-      // 注意：commit hash、OP_RETURN、绑定验证等约束将在 melt 阶段进行
-      console.log('✅ RGB++ 创建阶段验证完成：BTC UTXO 已确认，CKB DoB 已铸造')
-      
-      // 创建红包数据结构
-      const newGift: Partial<RedPacket> = {
-        sporeId: mintResult.sporeId,
-        ckbTxHash: mintResult.txHash,
-        btcTxId: fundingResult.txid,
-        btcVout: fundingResult.vout,
-        ownerCkbLockHash: mintResult.ownerLockHash, // 添加 owner lock hash 字段
-        blessingText: form.blessingText,
-        ckbBytesEstimate: Number(capacityEstimate / (10n ** 8n)),
-        status: 'pending',
-        btcConfirms: 0,
-        createdAt: Date.now(),
-        // RGB++ 创建阶段已完成基础验证
-        rgbppValidated: isUtxoValid, // 创建阶段只验证 UTXO 有效性
-        isRealTransaction: true // 标记为真实交易
+      try {
+        const commitResponse = await fetch('/api/redpacket/commit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            draftId: prepareResult.draftId,
+            btcTxId: fundingResult.txid,
+            rgbppCkbVirtualTx: prepareResult.rgbppCkbVirtualTx
+          })
+        })
+
+        if (!commitResponse.ok) {
+          const commitError = await commitResponse.json()
+          throw new Error(commitError.error || '提交到 RGB++ 队列失败')
+        }
+
+        const commitResult = await commitResponse.json()
+        console.log('✅ 成功提交到 RGB++ 队列:', commitResult)
+        console.log('Task ID:', commitResult.taskId)
+        console.log('CKB TX Hash:', commitResult.ckbTxHash)
+
+        // 步骤 3: 轮询状态等待 CKB 镜像完成
+        setProgressMessage('等待 CKB 镜像交易创建中...')
+        console.log('⏳ 轮询 RGB++ 状态，等待 MIRRORED...')
+
+        let rgbppStatus = 'FUNDED'
+        let pollCount = 0
+        const maxPolls = 30 // 最多轮询 30 次 (5分钟)
+        let ckbTxHash = commitResult.ckbTxHash
+
+        while (rgbppStatus !== 'MIRRORED' && pollCount < maxPolls) {
+          await new Promise(resolve => setTimeout(resolve, 10000)) // 等待 10 秒
+          
+          try {
+            const statusResponse = await fetch(
+              `/api/redpacket/status?taskId=${commitResult.taskId}${ckbTxHash ? `&ckbTxHash=${ckbTxHash}` : ''}`
+            )
+            
+            if (statusResponse.ok) {
+              const statusData = await statusResponse.json()
+              rgbppStatus = statusData.status || 'FUNDED'
+              ckbTxHash = statusData.ckbTxHash || ckbTxHash
+              
+              console.log(`🔍 RGB++ 状态检查 (${pollCount + 1}/${maxPolls}):`, statusData)
+              setProgressMessage(`等待 CKB 镜像交易... (${rgbppStatus}) (${pollCount + 1}/${maxPolls})`)
+              
+              if (rgbppStatus === 'MIRRORED' && ckbTxHash) {
+                console.log('✅ CKB 镜像交易已创建:', ckbTxHash)
+                break
+              }
+            }
+          } catch (statusError) {
+            console.warn('状态查询出错，继续等待:', statusError)
+          }
+          
+          pollCount++
+        }
+
+        if (rgbppStatus === 'MIRRORED') {
+          setProgressMessage('✅ RGB++ 强绑定完成，CKB 镜像交易已创建')
+          console.log('🎉 RGB++ 强绑定流程完成！')
+        } else {
+          console.warn('⚠️ RGB++ 镜像可能仍在处理中，但流程继续')
+          setProgressMessage('⚠️ CKB 镜像仍在处理中，可稍后查看状态')
+        }
+
+        // 步骤 4: 创建红包记录（使用 RGB++ 数据）
+        setCurrentStep(CreationStep.CKB_MINTING)
+        setProgressMessage('创建红包记录...')
+        console.log('📝 创建红包记录...')
+
+        // 创建红包数据结构（基于 RGB++ 结果）
+        const newGift: Partial<RedPacket> = {
+          // RGB++ 相关字段
+          draftId: prepareResult.draftId,
+          taskId: commitResult.taskId,
+          ckbTxHash: ckbTxHash, // 来自 RGB++ 镜像
+          btcTxId: fundingResult.txid,
+          btcVout: fundingResult.vout,
+          
+          // 红包内容
+          blessingText: form.blessingText,
+          btcAmountSats: form.btcAmountSats,
+          ckbBytesEstimate: Number(capacityEstimate / (10n ** 8n)),
+          
+          // 状态管理
+          status: rgbppStatus, // 'MIRRORED' 或 'FUNDED'
+          btcConfirms: confirmations,
+          createdAt: Date.now(),
+          rgbppValidated: true, // RGB++ 流程已验证
+          isRealTransaction: true
+        }
+
+        setCreatedGift(newGift)
+        setCurrentStep(CreationStep.COMPLETED)
+        
+        // 保存到本地存储
+        const existingGifts = JSON.parse(localStorage.getItem('redPackets') || '[]')
+        existingGifts.push(newGift)
+        localStorage.setItem('redPackets', JSON.stringify(existingGifts))
+        
+        // 清除待确认的交易信息
+        localStorage.removeItem('pendingBtcTx')
+
+        console.log('🎁 RGB++ 红包创建完成!')
+        console.log('📊 最终状态:', {
+          btcTxId: fundingResult.txid,
+          ckbTxHash: ckbTxHash,
+          status: rgbppStatus,
+          taskId: commitResult.taskId
+        })
+
+      } catch (commitError) {
+        console.error('❌ RGB++ 队列提交失败:', commitError)
+        
+        // 降级：显示错误但不中断流程
+        setProgressMessage(`⚠️ RGB++ 队列提交失败: ${commitError.message}`)
+        console.log('💡 继续传统流程作为降级方案...')
+        
+        // 使用传统流程作为降级
+        try {
+          setCurrentStep(CreationStep.CKB_MINTING)
+          console.log('⚡ 降级到传统 CKB DoB 铸造...')
+          
+          // 读取封面文件为字节数组
+          const coverBytes = new Uint8Array(await form.coverFile.arrayBuffer())
+          
+          const mintResult = await mintDoB(
+            coverBytes,
+            form.blessingText,
+            fundingResult.txid,
+            fundingResult.vout
+          )
+          console.log('✅ CKB DoB 铸造成功:', mintResult.sporeId)
+          
+          // 创建降级红包数据结构
+          const fallbackGift: Partial<RedPacket> = {
+            sporeId: mintResult.sporeId,
+            ckbTxHash: mintResult.txHash,
+            btcTxId: fundingResult.txid,
+            btcVout: fundingResult.vout,
+            ownerCkbLockHash: mintResult.ownerLockHash,
+            blessingText: form.blessingText,
+            ckbBytesEstimate: Number(capacityEstimate / (10n ** 8n)),
+            status: 'pending', // 降级状态
+            btcConfirms: confirmations,
+            createdAt: Date.now(),
+            rgbppValidated: false, // RGB++ 队列失败
+            isRealTransaction: true,
+            error: commitError.message
+          }
+          
+          setCreatedGift(fallbackGift)
+          setCurrentStep(CreationStep.COMPLETED)
+          
+          // 保存到本地存储
+          const existingGifts = JSON.parse(localStorage.getItem('redPackets') || '[]')
+          existingGifts.push(fallbackGift)
+          localStorage.setItem('redPackets', JSON.stringify(existingGifts))
+          
+          console.log('🎁 降级红包创建完成 (RGB++ 队列失败)')
+          
+        } catch (fallbackError) {
+          console.error('❌ 降级流程也失败了:', fallbackError)
+          throw new Error(`RGB++ 队列失败且降级失败: ${fallbackError.message}`)
+        }
       }
-      
-      setCreatedGift(newGift)
-      setCurrentStep(CreationStep.COMPLETED)
-      
-      console.log('🎁 RGB++ 红包创建完成!')
-      // 综合评估创建是否成功 - 不仅仅依赖单一的 UTXO 验证结果
-      const creationSuccess = {
-        utxoValid: isUtxoValid,                    // UTXO 验证结果
-        ckbDobMinted: !!mintResult.sporeId,        // CKB DoB 是否成功铸造
-        btcTxConfirmed: confirmations >= 1,        // BTC 交易是否已确认
-        ownerLockHashValid: !!mintResult.ownerLockHash, // Owner lock hash 是否获取成功
-      }
-      
-      // 综合判断创建是否有效 - 只要关键组件成功就认为创建有效
-      const overallValid = (
-        creationSuccess.ckbDobMinted &&           // CKB DoB 必须成功铸造
-        creationSuccess.btcTxConfirmed &&         // BTC 交易必须已确认
-        creationSuccess.ownerLockHashValid        // Owner lock hash 必须存在（销毁时需要）
-      )
-      
-      // 更新红包的验证状态
-      newGift.rgbppValidated = overallValid
-      
-      console.log('📊 创建阶段综合验证结果:', {
-        ...creationSuccess,
-        overallValid: overallValid,
-        note: isUtxoValid ? '✅ UTXO网络验证通过' : '⚠️ UTXO网络验证失败但不影响整体创建'
-      })
-      console.log('💡 melt 阶段的 RGB++ 约束验证将在销毁红包时进行')
-      
-      // 保存到本地存储
-      const existingGifts = JSON.parse(localStorage.getItem('redPackets') || '[]')
-      existingGifts.push(newGift)
-      localStorage.setItem('redPackets', JSON.stringify(existingGifts))
-      
-      // 清除待确认的交易信息
-      localStorage.removeItem('pendingBtcTx')
       
     } catch (err) {
       console.error('❌ RGB++ 红包创建失败:', err)
@@ -563,7 +664,12 @@ export default function NewGiftPage() {
                     completed={isStepCompleted(currentStep, CreationStep.BTC_FUNDING)}
                   />
                   <StepIndicator
-                    step="CKB DoB 铸造"
+                    step="RGB++ 队列提交"
+                    current={currentStep === CreationStep.RGB_QUEUE}
+                    completed={isStepCompleted(currentStep, CreationStep.RGB_QUEUE)}
+                  />
+                  <StepIndicator
+                    step="CKB 镜像完成"
                     current={currentStep === CreationStep.CKB_MINTING}
                     completed={isStepCompleted(currentStep, CreationStep.CKB_MINTING)}
                   />
@@ -689,8 +795,10 @@ function getStepText(step: CreationStep): string {
   switch (step) {
     case CreationStep.BTC_FUNDING:
       return '正在创建 BTC 交易...'
+    case CreationStep.RGB_QUEUE:
+      return '正在提交 RGB++ 队列...'
     case CreationStep.CKB_MINTING:
-      return '正在铸造 DoB...'
+      return '正在等待 CKB 镜像...'
     case CreationStep.COMPLETED:
       return '创建完成'
     default:
@@ -700,7 +808,7 @@ function getStepText(step: CreationStep): string {
 
 // 判断步骤是否完成
 function isStepCompleted(currentStep: CreationStep, targetStep: CreationStep): boolean {
-  const stepOrder = [CreationStep.FORM, CreationStep.BTC_FUNDING, CreationStep.CKB_MINTING, CreationStep.COMPLETED]
+  const stepOrder = [CreationStep.FORM, CreationStep.BTC_FUNDING, CreationStep.RGB_QUEUE, CreationStep.CKB_MINTING, CreationStep.COMPLETED]
   const currentIndex = stepOrder.indexOf(currentStep)
   const targetIndex = stepOrder.indexOf(targetStep)
   return currentIndex > targetIndex
