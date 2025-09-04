@@ -114,7 +114,7 @@ export default function NewGiftPage() {
     }
   }, [form.coverFile, form.blessingText])
 
-  // 创建红包主流程 - 集成 RGB++ 验证
+  // 创建红包主流程 - 集成 RGB++ 强绑定流程
   const createRedPacket = async () => {
     if (!form.coverFile || !form.blessingText || form.btcAmountSats <= 0) {
       setError('请填写完整信息')
@@ -125,10 +125,58 @@ export default function NewGiftPage() {
       setLoading(true)
       setError(null)
       
-      console.log('🚀 开始创建 RGB++ 红包...')
+      console.log('🚀 开始创建 RGB++ 强绑定红包...')
       
-      // 步骤 1: BTC Funding Transaction
+      // 新流程：先调用 prepare API
       setCurrentStep(CreationStep.BTC_FUNDING)
+      setProgressMessage('正在准备 RGB++ 虚拟交易...')
+      
+      // 获取当前 BTC UTXOs
+      const utxosResponse = await fetch(`https://mempool.space/testnet/api/address/${btcAddress}/utxo`)
+      const utxos = await utxosResponse.json()
+      
+      if (utxos.length === 0) {
+        throw new Error('没有可用的 BTC UTXO')
+      }
+      
+      // 准备请求数据
+      const prepareData = {
+        ckbFromAddress: 'ckt1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq', // 占位地址
+        dob: {
+          title: '红包',
+          coverCid: '', // 暂时留空，稍后实现 IPFS 上传
+          message: form.blessingText,
+          amount: `${Number(form.btcAmountSats) / 100000000} BTC`
+        },
+        btc: {
+          utxos: utxos.slice(0, 2).map((u: any) => ({ // 只取前2个UTXOs
+            txid: u.txid,
+            vout: u.vout,
+            value: u.value
+          })),
+          amountSats: Number(form.btcAmountSats),
+          changeAddress: btcAddress
+        }
+      }
+      
+      console.log('📝 调用 /api/redpacket/prepare...')
+      const prepareResponse = await fetch('/api/redpacket/prepare', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(prepareData)
+      })
+      
+      if (!prepareResponse.ok) {
+        const error = await prepareResponse.json()
+        throw new Error(error.error || '准备红包失败')
+      }
+      
+      const prepareResult = await prepareResponse.json()
+      console.log('✅ 准备完成，获得 PSBT:', prepareResult.debug)
+      console.log('Draft ID:', prepareResult.draftId)
+      
+      // 使用 JoyID 签名并广播 PSBT
+      setProgressMessage('正在通过 JoyID 签名并广播 BTC 交易...')
       console.log('📡 正在创建 BTC 资金交易...')
       
       const fundingResult = await createFundingTx(form.btcAmountSats)
