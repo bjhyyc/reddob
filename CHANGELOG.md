@@ -25,3 +25,10 @@
 - Added POST /api/redpacket/prepare endpoint
 - Integrated new flow into /gift/new page
 - Returns draftId, psbtHex, and virtual CKB tx structure
+
+### Step 3: Submit to RGB++ queue service
+- Added POST /api/redpacket/commit endpoint
+- Submits BTC txid and virtual CKB tx to RGB++ service
+- Added GET /api/redpacket/status endpoint for polling
+- Mock fallback for testnet environment
+- Returns taskId and ckbTxHash for tracking
