@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createRgbppCkbVirtualTx } from '@/services/rgbpp/buildCkbVirtualTx';
 import { createBtcPsbt } from '@/services/rgbpp/buildBtcPsbt';
 import psbtGuard from '@/lib/psbtGuard';
+import { apiLogger } from '@/lib/logger';
 
 // In-memory storage for drafts (in production, use a database)
 const drafts = new Map<string, any>();
@@ -24,10 +25,12 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    console.log('📝 Preparing red packet...');
-    console.log('CKB Address:', ckbFromAddress);
-    console.log('DoB Data:', dob);
-    console.log('BTC Config:', btc);
+    apiLogger.info('Preparing red packet', {
+      ckbFromAddress,
+      dobTitle: dob.title,
+      btcUtxoCount: btc.utxos?.length,
+      amountSats: btc.amountSats
+    });
 
     // Step 1: Create virtual CKB transaction
     const rgbppCkbVirtualTx = await createRgbppCkbVirtualTx({
@@ -64,9 +67,8 @@ export async function POST(req: NextRequest) {
       status: 'DRAFT'
     });
 
-    console.log('✅ Red packet prepared successfully');
-    console.log('Draft ID:', draftId);
-    console.log('PSBT hex prefix:', psbtHex.substring(0, 16));
+    apiLogger.logPsbt('Prepared', psbtHex, { draftId });
+    apiLogger.info('Red packet prepared successfully', { draftId });
 
     return NextResponse.json({
       draftId,
@@ -79,7 +81,10 @@ export async function POST(req: NextRequest) {
     });
 
   } catch (error) {
-    console.error('Error preparing red packet:', error);
+    apiLogger.error('Failed to prepare red packet', { 
+      error: error.message,
+      stack: error.stack 
+    });
     return NextResponse.json(
       { error: error.message || 'Failed to prepare red packet' },
       { status: 500 }

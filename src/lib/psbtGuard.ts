@@ -5,6 +5,7 @@
  */
 
 import { Buffer } from 'buffer';
+import { psbtLogger } from '@/lib/logger';
 
 // PSBT magic bytes: 0x70736274ff (psbt\xff in ASCII)
 const PSBT_MAGIC_HEX = '70736274ff';
@@ -27,15 +28,26 @@ export function toHex(psbtBase64OrHex: string): PsbtGuardResult {
     // Remove any whitespace
     const input = psbtBase64OrHex.trim();
     
+    psbtLogger.debug('Converting PSBT to hex', { 
+      inputLength: input.length,
+      startsWithMagic: input.toLowerCase().startsWith(PSBT_MAGIC_HEX)
+    });
+    
     // Check if it's already hex
     if (input.toLowerCase().startsWith(PSBT_MAGIC_HEX)) {
       hex = input.toLowerCase();
+      psbtLogger.info('PSBT already in hex format');
     } else {
       // Assume it's base64 and convert
       try {
         const buffer = Buffer.from(input, 'base64');
         hex = buffer.toString('hex');
+        psbtLogger.info('Converted base64 to hex', {
+          base64Length: input.length,
+          hexLength: hex.length
+        });
       } catch (e) {
+        psbtLogger.error('Invalid PSBT format', { error: e.message });
         return {
           psbtHex: '',
           isValid: false,
@@ -46,6 +58,10 @@ export function toHex(psbtBase64OrHex: string): PsbtGuardResult {
     
     // Validate magic bytes
     if (!hex.startsWith(PSBT_MAGIC_HEX)) {
+      psbtLogger.error('Missing PSBT magic bytes', {
+        expected: PSBT_MAGIC_HEX,
+        got: hex.substring(0, 10)
+      });
       return {
         psbtHex: '',
         isValid: false,
@@ -53,11 +69,14 @@ export function toHex(psbtBase64OrHex: string): PsbtGuardResult {
       };
     }
     
+    psbtLogger.logPsbt('Validated', hex);
+    
     return {
       psbtHex: hex,
       isValid: true
     };
   } catch (error) {
+    psbtLogger.error('PSBT conversion failed', { error: error.message });
     return {
       psbtHex: '',
       isValid: false,

@@ -32,3 +32,17 @@
 - Added GET /api/redpacket/status endpoint for polling
 - Mock fallback for testnet environment
 - Returns taskId and ckbTxHash for tracking
+
+### Step 4: List page with read-only display
+- Updated /gift/pool to show RGB++ states
+- Display DRAFT/FUNDED/MIRRORED status badges
+- Show BTC and CKB transaction links  
+- Read-only view without transfer/redeem
+- Auto-refresh every 10 seconds
+
+### Step 5: Logging and monitoring
+- Created structured logger module
+- Special logging for PSBT operations
+- Transaction ID tracking (BTC/CKB)
+- UTXO validation statistics
+- Error logs stored in localStorage
