@@ -8,9 +8,7 @@ import { createRgbppCkbVirtualTx } from '@/services/rgbpp/buildCkbVirtualTx';
 import { createBtcPsbt } from '@/services/rgbpp/buildBtcPsbt';
 import psbtGuard from '@/lib/psbtGuard';
 import { apiLogger } from '@/lib/logger';
-
-// In-memory storage for drafts (in production, use a database)
-const drafts = new Map<string, any>();
+import { draftsStorage } from '@/lib/draftsStorage';
 
 export async function POST(req: NextRequest) {
   try {
@@ -56,7 +54,7 @@ export async function POST(req: NextRequest) {
 
     // Generate draft ID and store
     const draftId = `draft_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    drafts.set(draftId, {
+    const draftData = {
       rgbppCkbVirtualTx,
       psbtBase64,
       psbtHex,
@@ -65,7 +63,10 @@ export async function POST(req: NextRequest) {
       btc,
       createdAt: new Date().toISOString(),
       status: 'DRAFT'
-    });
+    };
+    
+    // Persist to storage
+    await draftsStorage.set(draftId, draftData);
 
     apiLogger.logPsbt('Prepared', psbtHex, { draftId });
     apiLogger.info('Red packet prepared successfully', { draftId });
@@ -92,5 +93,3 @@ export async function POST(req: NextRequest) {
   }
 }
 
-// Export drafts for other routes to use
-export { drafts };

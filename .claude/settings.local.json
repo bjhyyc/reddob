@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(/D:\\IDEA\\reddob\\reddob\\src\\app\\api\\redpacket\\commit/**)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

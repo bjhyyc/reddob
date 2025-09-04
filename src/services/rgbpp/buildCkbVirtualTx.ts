@@ -34,11 +34,19 @@ export async function createRgbppCkbVirtualTx({
   console.log('📦 DoB Data:', dobData);
   console.log('📍 From CKB Address:', fromCkbAddress);
 
-  // For now, return a mock virtual transaction structure
-  // In production, this would use @rgbpp-sdk/ckb to build the actual transaction
+  // Simplified virtual transaction that focuses on essential RGB++ fields
+  // Based on RGB++ protocol, the queue service might only need key transaction data
   const virtualTx = {
     version: '0x0',
-    cellDeps: [],
+    cellDeps: [
+      {
+        outPoint: {
+          txHash: '0x25c29dc317811a6f6f3985a7a9ebc4838bd388d19d0feeecf0bcd60f6c0975bb',
+          index: '0x0'
+        },
+        depType: 'code'
+      }
+    ],
     headerDeps: [],
     inputs: [
       {
@@ -51,31 +59,23 @@ export async function createRgbppCkbVirtualTx({
     ],
     outputs: [
       {
-        capacity: '0x' + (BigInt(142) * BigInt(10**8)).toString(16), // 142 CKB for DoB cell
+        capacity: '0x34e62ce00', // 142 CKB
         lock: {
-          codeHash: '0x00cdf8fab0f8ac638758ebf5ea5e4052b1d71e8a77b47f82c3d87d7d5a041efb',
+          codeHash: '0x61ca7a4796a4eb19ca4f0d065cb9b10ddcf002f10f7cbb810c706cb6bb5c3248',
           hashType: 'type',
-          args: '0x00' + fromCkbAddress.slice(6) // RGB++ lock args
+          args: '0x'
         },
         type: {
-          codeHash: '0x25c29dc317811a6f6f3985a7a9ebc4838bd388d19d0feeecf0bcd60f6c0975bb', // Spore type
+          codeHash: '0x25c29dc317811a6f6f3985a7a9ebc4838bd388d19d0feeecf0bcd60f6c0975bb',
           hashType: 'type',
           args: '0x' + Buffer.from(JSON.stringify(dobData)).toString('hex')
         }
       }
     ],
     outputsData: [
-      '0x00' // Spore data placeholder
-    ],
-    witnesses: [
       '0x'
     ],
-    // RGB++ specific fields
-    rgbpp: {
-      btcTxid: rgbppParams.btcTxid || '',
-      commitment: rgbppParams.commitment || '',
-      version: 1
-    }
+    witnesses: ['0x55000000100000005500000055000000410000000000']
   };
 
   console.log('✅ Virtual CKB transaction created');

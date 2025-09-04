@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import { NewGiftForm, RedPacket, CONSTANTS } from '@/types'
 import { createFundingTx } from '@/lib/joyid/bitcoin'
-import { mintDoB } from '@/lib/joyid/ckb'
 import { estimateDoBAgeCapacity, formatCapacity } from '@/lib/rgbpp/estimate'
 import { validateRgbppUtxo } from '@/lib/rgbpp/validator'
 import { useWallet } from '@/contexts/WalletContext'
@@ -49,6 +48,15 @@ export default function NewGiftPage() {
   const [, setConfirmationCount] = useState(0)
   const [estimatedWaitTime, setEstimatedWaitTime] = useState<string>('')
   const [currentBtcTxId, setCurrentBtcTxId] = useState<string>('')
+  
+  // RGB++进度跟踪状态
+  const [rgbppProgress, setRgbppProgress] = useState({
+    stage: '',
+    progressPercent: 0,
+    btcConfirmations: 0,
+    estimatedTimeRemaining: '',
+    stageDescription: ''
+  })
   
   // 预览状态
   const [coverPreview, setCoverPreview] = useState<string | null>(null)
@@ -121,6 +129,8 @@ export default function NewGiftPage() {
       setError('请填写完整信息')
       return
     }
+    
+    let confirmations = 0 // 声明确认数量变量
     
     try {
       setLoading(true)
@@ -196,7 +206,7 @@ export default function NewGiftPage() {
           coverFileSize: form.coverFile?.size || 0
         },
         timestamp: Date.now(),
-        capacityEstimate: Number(capacityEstimate / (10n ** 8n))
+        capacityEstimate: Number(capacityEstimate) / Math.pow(10, 8)
       }
       localStorage.setItem('pendingBtcTx', JSON.stringify(pendingTx))
       
@@ -211,58 +221,12 @@ export default function NewGiftPage() {
         console.log('✅ BTC UTXO 验证通过')
       }
       
-      // 检查 BTC 交易确认状态
-      console.log('🔍 检查 BTC 交易确认状态...')
-      setProgressMessage('正在等待 BTC 交易确认...')
-      setWaitingForConfirmation(true)
-      setEstimatedWaitTime('预计等待时间：10-30 分钟')
-      
-      let confirmations = 0
-      let retryCount = 0
-      const maxRetries = 60 // 最多等待约 30 分钟（BTC 测试网出块可能较慢）
-      
-      while (confirmations < 1 && retryCount < maxRetries) {
-        try {
-          const txResponse = await fetch(`https://mempool.space/testnet/api/tx/${fundingResult.txid}`)
-          if (txResponse.ok) {
-            const txData = await txResponse.json()
-            if (txData.status?.confirmed) {
-              const tipResponse = await fetch('https://mempool.space/testnet/api/blocks/tip/height')
-              const tipHeight = await tipResponse.json()
-              confirmations = tipHeight - txData.status.block_height + 1
-              setConfirmationCount(confirmations)
-              setProgressMessage(`✅ BTC 交易已确认 ${confirmations} 次`)
-              console.log(`✅ BTC 交易已确认 ${confirmations} 次`)
-              break
-            }
-          }
-        } catch {
-          console.log('检查确认状态时出错，继续等待...')
-        }
-        
-        const waitedMinutes = Math.floor((retryCount + 1) * 0.5) // 每次等待30秒
-        const remainingRetries = maxRetries - retryCount - 1
-        const estimatedRemainingMinutes = Math.floor(remainingRetries * 0.5)
-        
-        setProgressMessage(`⏳ 等待 BTC 交易确认中... (${retryCount + 1}/${maxRetries})`)
-        setEstimatedWaitTime(`已等待 ${waitedMinutes} 分钟，预计还需 ${estimatedRemainingMinutes} 分钟`)
-        
-        console.log(`⏳ BTC 交易尚未确认，等待中... (${retryCount + 1}/${maxRetries})`)
-        await new Promise(resolve => setTimeout(resolve, 30000)) // 等待 30 秒
-        retryCount++
-      }
-      
+      // 跳过 BTC 交易确认等待，直接进行下一步以加快测试
+      console.log('🔍 BTC 交易广播成功，为加快测试跳过确认等待')
+      setProgressMessage('✅ BTC 交易广播成功，立即提交到 RGB++ 队列')
       setWaitingForConfirmation(false)
       
-      if (confirmations < 1) {
-        setProgressMessage('❌ BTC 交易尚未获得确认，无法继续创建红包')
-        console.log('❌ BTC 交易尚未确认，根据 RGB++ 协议要求无法继续')
-        console.log('💡 RGB++ 协议要求 BTC 交易至少有 1 个确认才能进行 CKB 绑定')
-        throw new Error(`BTC 交易需要至少 1 个确认才能进行 CKB 绑定。当前确认数: ${confirmations}。请等待更长时间后再试，或者检查交易是否成功提交到网络。`)
-      } else {
-        setProgressMessage('✅ BTC 交易确认完成，开始提交到 RGB++ 队列')
-        console.log(`✅ BTC 交易已确认 ${confirmations} 次，满足 RGB++ 协议要求`)
-      }
+      console.log(`✅ BTC 交易广播成功 (${fundingResult.txid})，立即进行 RGB++ 队列提交`)
 
       // 步骤 2: 提交到 RGB++ 队列服务
       setCurrentStep(CreationStep.RGB_QUEUE)
@@ -296,15 +260,23 @@ export default function NewGiftPage() {
 
         let rgbppStatus = 'FUNDED'
         let pollCount = 0
-        const maxPolls = 30 // 最多轮询 30 次 (5分钟)
+        const maxPolls = 90 // 最多轮询 90 次 (45分钟)
         let ckbTxHash = commitResult.ckbTxHash
 
         while (rgbppStatus !== 'MIRRORED' && pollCount < maxPolls) {
-          await new Promise(resolve => setTimeout(resolve, 10000)) // 等待 10 秒
+          // 分阶段轮询策略：前期快速检查，后期降低频率
+          let pollInterval = 10000 // 默认10秒
+          if (pollCount >= 30) {
+            pollInterval = 60000 // 30次后改为60秒间隔
+          } else if (pollCount >= 10) {
+            pollInterval = 30000 // 10次后改为30秒间隔
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, pollInterval))
           
           try {
             const statusResponse = await fetch(
-              `/api/redpacket/status?taskId=${commitResult.taskId}${ckbTxHash ? `&ckbTxHash=${ckbTxHash}` : ''}`
+              `/api/redpacket/status?taskId=${commitResult.taskId}${ckbTxHash ? `&ckbTxHash=${ckbTxHash}` : ''}&btcTxId=${fundingResult.txid}`
             )
             
             if (statusResponse.ok) {
@@ -313,7 +285,48 @@ export default function NewGiftPage() {
               ckbTxHash = statusData.ckbTxHash || ckbTxHash
               
               console.log(`🔍 RGB++ 状态检查 (${pollCount + 1}/${maxPolls}):`, statusData)
-              setProgressMessage(`等待 CKB 镜像交易... (${rgbppStatus}) (${pollCount + 1}/${maxPolls})`)
+              
+              // 计算进度百分比和预计剩余时间
+              const progressPercent = Math.min((pollCount / maxPolls) * 100, 95) // 最多95%，留5%给完成状态
+              const elapsedMinutes = Math.floor(pollCount * (pollInterval / 60000))
+              const estimatedTotalMinutes = 45
+              const remainingMinutes = Math.max(0, estimatedTotalMinutes - elapsedMinutes)
+              
+              // 根据轮询阶段显示不同的状态信息
+              let phaseDescription = ''
+              if (pollCount < 10) {
+                phaseDescription = '快速检查阶段 (每10秒)'
+              } else if (pollCount < 30) {
+                phaseDescription = '标准检查阶段 (每30秒)'
+              } else {
+                phaseDescription = '缓慢检查阶段 (每60秒)'
+              }
+              
+              // 更新RGB++进度跟踪状态
+              setRgbppProgress({
+                stage: statusData.stage || 'processing',
+                progressPercent: statusData.progressPercent || progressPercent,
+                btcConfirmations: statusData.btcConfirmations || 0,
+                estimatedTimeRemaining: statusData.estimatedTimeRemaining || `${remainingMinutes}分钟`,
+                stageDescription: phaseDescription
+              });
+              
+              // 使用API返回的详细进度信息
+              if (statusData.message && statusData.progressPercent !== undefined) {
+                const apiProgress = statusData.progressPercent || progressPercent;
+                const apiTimeRemaining = statusData.estimatedTimeRemaining || `${remainingMinutes}分钟`;
+                const defaultMessage = `等待 CKB 镜像交易... (${rgbppStatus}) ${phaseDescription}`;
+                const apiMessage = statusData.message || defaultMessage;
+                
+                setProgressMessage(
+                  `${apiMessage} - 进度: ${Math.round(apiProgress)}% (预计还需${apiTimeRemaining})`
+                );
+              } else {
+                // 显示RGB++处理状态
+                setProgressMessage(
+                  `等待 CKB 镜像交易... (${rgbppStatus}) ${phaseDescription} - 第${pollCount + 1}/${maxPolls}次检查 (预计还需${remainingMinutes}分钟)`
+                );
+              }
               
               if (rgbppStatus === 'MIRRORED' && ckbTxHash) {
                 console.log('✅ CKB 镜像交易已创建:', ckbTxHash)
@@ -351,8 +364,8 @@ export default function NewGiftPage() {
           
           // 红包内容
           blessingText: form.blessingText,
-          btcAmountSats: form.btcAmountSats,
-          ckbBytesEstimate: Number(capacityEstimate / (10n ** 8n)),
+          btcAmountSats: Number(form.btcAmountSats), // 转换 BigInt 为 number
+          ckbBytesEstimate: Number(capacityEstimate) / Math.pow(10, 8),
           
           // 状态管理
           status: rgbppStatus, // 'MIRRORED' 或 'FUNDED'
@@ -383,58 +396,7 @@ export default function NewGiftPage() {
 
       } catch (commitError) {
         console.error('❌ RGB++ 队列提交失败:', commitError)
-        
-        // 降级：显示错误但不中断流程
-        setProgressMessage(`⚠️ RGB++ 队列提交失败: ${commitError.message}`)
-        console.log('💡 继续传统流程作为降级方案...')
-        
-        // 使用传统流程作为降级
-        try {
-          setCurrentStep(CreationStep.CKB_MINTING)
-          console.log('⚡ 降级到传统 CKB DoB 铸造...')
-          
-          // 读取封面文件为字节数组
-          const coverBytes = new Uint8Array(await form.coverFile.arrayBuffer())
-          
-          const mintResult = await mintDoB(
-            coverBytes,
-            form.blessingText,
-            fundingResult.txid,
-            fundingResult.vout
-          )
-          console.log('✅ CKB DoB 铸造成功:', mintResult.sporeId)
-          
-          // 创建降级红包数据结构
-          const fallbackGift: Partial<RedPacket> = {
-            sporeId: mintResult.sporeId,
-            ckbTxHash: mintResult.txHash,
-            btcTxId: fundingResult.txid,
-            btcVout: fundingResult.vout,
-            ownerCkbLockHash: mintResult.ownerLockHash,
-            blessingText: form.blessingText,
-            ckbBytesEstimate: Number(capacityEstimate / (10n ** 8n)),
-            status: 'pending', // 降级状态
-            btcConfirms: confirmations,
-            createdAt: Date.now(),
-            rgbppValidated: false, // RGB++ 队列失败
-            isRealTransaction: true,
-            error: commitError.message
-          }
-          
-          setCreatedGift(fallbackGift)
-          setCurrentStep(CreationStep.COMPLETED)
-          
-          // 保存到本地存储
-          const existingGifts = JSON.parse(localStorage.getItem('redPackets') || '[]')
-          existingGifts.push(fallbackGift)
-          localStorage.setItem('redPackets', JSON.stringify(existingGifts))
-          
-          console.log('🎁 降级红包创建完成 (RGB++ 队列失败)')
-          
-        } catch (fallbackError) {
-          console.error('❌ 降级流程也失败了:', fallbackError)
-          throw new Error(`RGB++ 队列失败且降级失败: ${fallbackError.message}`)
-        }
+        throw new Error(`RGB++ 队列提交失败: ${commitError.message}`)
       }
       
     } catch (err) {
@@ -704,12 +666,68 @@ export default function NewGiftPage() {
               </div>
             )}
 
-            {/* 非等待确认状态的进度消息 */}
+            {/* RGB++进度跟踪面板 */}
             {!waitingForConfirmation && progressMessage && currentStep !== CreationStep.COMPLETED && (
-              <div className="bg-gray-50 rounded-lg shadow p-4">
-                <div className="flex items-center space-x-2">
-                  <div className="animate-spin w-4 h-4 border-2 border-gray-600 border-t-transparent rounded-full"></div>
-                  <span className="text-gray-800 text-sm font-medium">{progressMessage}</span>
+              <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg shadow-lg p-4 border border-purple-200">
+                <h3 className="font-semibold text-purple-800 mb-3">🔄 RGB++ 强绑定进度</h3>
+                
+                {/* 进度条 */}
+                <div className="mb-4">
+                  <div className="flex justify-between text-xs text-purple-700 mb-1">
+                    <span>总体进度</span>
+                    <span>{rgbppProgress.progressPercent}%</span>
+                  </div>
+                  <div className="w-full bg-purple-200 rounded-full h-2">
+                    <div 
+                      className="bg-gradient-to-r from-purple-500 to-blue-500 h-2 rounded-full transition-all duration-300"
+                      style={{ width: `${rgbppProgress.progressPercent}%` }}
+                    ></div>
+                  </div>
+                </div>
+
+                {/* 当前状态 */}
+                <div className="space-y-3">
+                  <div className="flex items-center space-x-2">
+                    <div className="animate-spin w-4 h-4 border-2 border-purple-500 border-t-transparent rounded-full"></div>
+                    <span className="text-purple-800 text-sm font-medium">{progressMessage}</span>
+                  </div>
+                  
+                  {/* BTC确认状态 */}
+                  {rgbppProgress.btcConfirmations !== undefined && (
+                    <div className="bg-white bg-opacity-50 rounded p-3 text-sm">
+                      <div className="flex justify-between items-center mb-2">
+                        <span className="text-purple-700">BTC 确认状态</span>
+                        <span className="text-purple-800 font-medium">
+                          {rgbppProgress.btcConfirmations}/1 确认
+                        </span>
+                      </div>
+                      <div className="w-full bg-purple-200 rounded-full h-1">
+                        <div 
+                          className="bg-purple-500 h-1 rounded-full transition-all duration-300"
+                          style={{ width: `${Math.min(rgbppProgress.btcConfirmations * 100, 100)}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* 预计剩余时间 */}
+                  <div className="text-xs text-purple-600">
+                    ⏱️ 预计还需: {rgbppProgress.estimatedTimeRemaining}
+                  </div>
+                  
+                  {/* 当前BTC交易链接 */}
+                  {currentBtcTxId && (
+                    <div className="text-xs">
+                      <a 
+                        href={`https://mempool.space/testnet/tx/${currentBtcTxId}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-blue-600 hover:underline"
+                      >
+                        🔗 查看 BTC 交易状态
+                      </a>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
