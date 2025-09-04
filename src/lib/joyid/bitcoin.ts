@@ -2,6 +2,7 @@ import { initConfig, requestAccounts, getAccounts, getPublicKey, sendPsbt } from
 import { WalletBalance, BtcUtxo, Hex, CONSTANTS } from '@/types'
 import * as bitcoin from 'bitcoinjs-lib'
 import { Buffer } from 'buffer'
+import psbtGuard from '@/lib/psbtGuard'
 
 let isInitialized = false
 
@@ -289,9 +290,12 @@ export async function createFundingTx(
     }
     
     // 转换为十六进制字符串发送给 JoyID 签名
-    const psbtHex = psbt.toHex()
+    const psbtBase64 = psbt.toBase64()
+    const psbtHex = psbtGuard.guardForJoyId(psbtBase64)
     
     console.log('📝 PSBT 构建完成，长度:', psbtHex.length)
+    console.log('🔍 PSBT hex 前16字符:', psbtHex.substring(0, 16))
+    console.log('✅ PSBT Guard 验证通过')
     console.log('📤 发送 PSBT 到 JoyID 进行签名和广播...')
     
     const result = await sendPsbt(psbtHex)
@@ -505,8 +509,11 @@ export async function spendUtxoWithOpReturn(
     }
     
     // 转换为十六进制字符串发送给 JoyID 签名
-    const psbtHex = psbt.toHex()
+    const psbtBase64 = psbt.toBase64()
+    const psbtHex = psbtGuard.guardForJoyId(psbtBase64)
     
+    console.log('🔍 Spend PSBT hex 前16字符:', psbtHex.substring(0, 16))
+    console.log('✅ PSBT Guard 验证通过')
     console.log('Sending spend PSBT to JoyID for signing...')
     const signedTx = await sendPsbt(psbtHex)
     
